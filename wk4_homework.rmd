@@ -1,0 +1,75 @@
+---
+title: "wk4_homework"
+output: html_document
+date: "2025-10-28"
+---
+
+```{r}
+library(sf)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(stringr)
+library(classInt)
+library(scales)
+library(tmap)
+library(countrycode)
+library(readxl)
+```
+
+
+read data document
+
+```{r}
+world <- st_read("/Users/levine/Desktop/CASA/GIS/wk4/exam_doc/World_Data55/World_Countries_Generalized.shp")
+
+gii_path <- "/Users/levine/Desktop/CASA/GIS/wk4/exam_doc/HDR25_Statistical_Annex_GII_Table.xlsx"
+gii <- readxl::read_excel(gii_path, sheet = "Table 5. GII", skip = 5)
+```
+
+change all to lowercase
+```{r}
+names(world) <- tolower(names(world)) 
+names(gii) <- tolower(names(gii))
+```
+
+
+unified listing
+
+```{r}
+ 
+world <- world %>%
+  mutate(name_join = coalesce(country, countryaff),
+         iso3 = coalesce(
+           ifelse(nchar(iso) == 3, toupper(iso), NA_character_),
+           ifelse(nchar(aff_iso) == 3, toupper(aff_iso), NA_character_),
+           countrycode(name_join, "country.name", "iso3c")
+         ))
+```
+
+```{r}
+gii <- gii %>%
+  mutate(iso3 = countrycode(country, "country.name", "iso3c"))
+```
+
+take only 2010 and 2019
+```{r}
+gii_10_19 <- gii %>%
+  filter(year %in% c(2020, 2023)) %>%
+  select(iso3, year, gii)
+```
+
+calculate the difference
+```{r}
+gii_diff <- gii_10_19 %>%
+  mutate(gii_diff_10_19 = gii_2019 - gii_2010)
+```
+
+join the world
+```{r}
+world_gii <- world %>%
+  left_join(gii_diff, by = "iso3")
+```
+
+
+
