@@ -1,0 +1,196 @@
+---
+title: "wk4_exam_try"
+output: html_document
+---
+
+```{r}
+library(sf)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(stringr)
+library(classInt)
+library(scales)
+library(tmap)
+library(countrycode)
+library(readxl)
+```
+
+
+```{r read data}
+world_path <- "/Users/levine/Desktop/CASA/GIS/wk4/exam_doc/World_Data55/World_Countries_Generalized.shp"
+world <- st_read(world_path, quiet = TRUE)
+
+gii_path <- "/Users/levine/Desktop/CASA/GIS/wk4/exam_doc/HDR25_Statistical_Annex_GII_Table.xlsx"
+gii_raw <- readxl::read_excel(gii_path, sheet = "Table 5. GII", skip = 5)
+```
+
+
+use lowercase to all names
+```{r}
+names(world) <- stringr::str_to_lower(names(world))
+```
+
+country first, then countryaff
+```{r}
+world <- world %>%
+mutate(name_join = dplyr::coalesce(country, countryaff))
+```
+
+```{r}
+#coordinate
+unique(st_geometry_type(world))
+st_crs(world)
+#record number and names
+nrow(world)
+names(world)
+
+#check with the na
+sapply(world %>% st_drop_geometry(), function(x) sum(is.na(x)))
+```
+
+```{r}
+world_ea <- st_transform(world, 6933)
+```
+
+使用等面积坐标系计算国家面积（平方千米），并基于 Natural Earth 自带字段计算人口密度、GDP/人等指标。
+```{r}
+world_ea <- world_ea %>%
+mutate(
+area_km2 = as.numeric(st_area(geometry)) / 1e6
+)
+```
+
+count
+```{r}
+#summary
+summary(world_ea$pop_density)
+summary(world_ea$gdp_per_cap)
+```
+
+
+the basic map
+```{r}
+world_ea %>%
+ggplot() +
+geom_sf(fill = "grey90", color = "white", linewidth = 0.2) +
+labs(title = "World Countries (Equal-Area Projection)", subtitle = "Natural Earth Admin 0") +
+theme_minimal()
+```
+
+2.分级着色（人口密度）
+```{r}
+# 如果没有人口密度（pop_density），则做一个基础底图作为占位。
+if (!"pop_density" %in% names(world_ea) || all(is.na(world_ea$pop_density))) {
+message("No pop_density available in this dataset — showing basemap instead.")
+ggplot(world_ea) +
+geom_sf(fill = "grey90", color = "white", linewidth = 0.2) +
+labs(title = "World Countries (No population density available)") +
+theme_minimal()
+} else {
+vals <- world_ea$pop_density
+brks <- classInt::classIntervals(vals[is.finite(vals)], n = 5, style = "quantile")$brks
+world_ea$dens_band <- cut(world_ea$pop_density, breaks = brks, include.lowest = TRUE)
+ggplot(world_ea) +
+geom_sf(aes(fill = dens_band), color = NA) +
+scale_fill_brewer(palette = "YlOrRd", na.value = "#dddddd", drop = FALSE, name = "Pop Density
+(quantiles)") +
+labs(title = "Population Density by Country", subtitle = "Quantile classification (5 classes)") +
+theme_minimal()
+}
+```
+
+
+Visualization
+```{r}
+tmap_mode("plot")
+qtm(world_ea)
+```
+
+
+```{r}
+cent <- st_point_on_surface(world_ea)
+```
+
+
+Link GII
+
+
+```{r}
+#use 6th row as the first
+gii_raw <- read_excel(gii_path, sheet = "Table 5. GII", skip = 5)
+
+#find the column of country
+idx_country <- which(names(gii_raw) == "Country")[1]
+
+# find the first numeric value after Country 
+num_cols <- which(sapply(gii_raw, is.numeric))
+num_after_country <- num_cols[num_cols > idx_country][1]
+
+#rename
+names(gii_raw)[idx_country] <- "country"
+names(gii_raw)[num_after_country] <- "gii_2023"
+
+#clean and keep country row, and use countrycode seek if iso3
+gii <- gii_raw %>%
+  mutate(
+    country = as.character(country),
+    iso3 = countrycode(country, "country.name", "iso3c", warn = FALSE)
+  ) %>%
+  filter(!is.na(country), !is.na(iso3)) %>%          
+  transmute(country, iso3, gii_2023 = as.numeric(gii_2023)) %>%
+  filter(!is.na(gii_2023))
+```
+```{r}
+head(gii)
+
+```
+
+
+
+Use or change to ISO3
+
+Join the GII
+```{r}
+world_ea <- world_ea %>%
+mutate(
+iso_raw = dplyr::coalesce(iso, aff_iso),
+iso_raw = ifelse(is.na(iso_raw) | iso_raw == "", NA_character_, iso_raw),
+iso3_from_raw = dplyr::case_when(
+!is.na(iso_raw) & nchar(iso_raw) == 3 ~ toupper(iso_raw), # already ISO3
+!is.na(iso_raw) & nchar(iso_raw) == 2 ~ countrycode(iso_raw, "iso2c", "iso3c"), # ISO2 to ISO3
+TRUE ~ NA_character_
+),
+iso3_from_name = countrycode(name_join, "country.name", "iso3c"),
+iso3 = dplyr::coalesce(iso3_from_raw, iso3_from_name)
+)
+
+#leftjoin GII
+a_world_gii <- world_ea %>%
+dplyr::left_join(gii %>% dplyr::select(iso3, gii_2023), by = "iso3")
+
+
+# join check
+sum(is.na(a_world_gii$gii_2023))
+```
+
+GII map
+```{r}
+#使用分位数进行分级
+gii_vals <- a_world_gii$gii_2023
+brks_gii <- classInt::classIntervals(gii_vals[is.finite(gii_vals)], n = 5, style = "quantile")$brks
+
+
+a_world_gii$gii_band <- cut(a_world_gii$gii_2023, breaks = brks_gii, include.lowest = TRUE)
+
+
+ggplot(a_world_gii) +
+geom_sf(aes(fill = gii_band), color = NA) +
+scale_fill_brewer(palette = "RdPu", na.value = "#dddddd", drop = FALSE,
+name = "GII (2023)
+Quantiles") +
+labs(title = "Global Gender Inequality Index (GII), 2023",
+subtitle = "Higher value = more inequality (UNDP HDR 2025)",
+caption = "Source: UNDP Human Development Report 2025, Table 5") +
+theme_minimal()
+```
